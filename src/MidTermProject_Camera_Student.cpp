@@ -6,6 +6,7 @@
 #include <vector>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -38,7 +39,38 @@ int main(int argc, const char *argv[])
     // misc
     int dataBufferSize = 2;       // no. of images which are held in memory (ring buffer) at the same time
     vector<DataFrame> dataBuffer; // list of data frames which are held in memory at the same time
-    bool bVis = false;            // visualize results
+
+    // Visualization settings
+    bool matchingVis = true;            // visualize matching results
+    bool detectorVis = false;    // visualize detector results
+
+    //////////////////////////////////////////////
+    // Detector, Descriptor and Matching settings
+    // Detector settings:
+    string detectorName = "AKAZE"; //SHITOMASI, HARRIS, FAST, BRISK, ORB, AKAZE, SIFT
+
+    // Descriptor settings
+    // Note: AKAZE Descriptor can be used only with AKAZE keypoints!
+    string descriptorName = "ORB"; // BRISK (binary), BRIEF (binary), ORB (binary), FREAK (binary), AKAZE (binary), SIFT (HOG)
+
+    // Matching settings
+    string matcherType = "MAT_BF";        // MAT_BF, MAT_FLANN
+    string descriptorType = (descriptorName.compare("SIFT") == 0) ? "DES_HOG" : "DES_BINARY"; // DES_BINARY, DES_HOG
+    string selectorType = "SEL_KNN";       // SEL_NN, SEL_KNN
+    //////////////////////////////////////////////
+
+    // Focus on vehicle ahead
+    bool bFocusOnVehicle = true;
+
+    // Limit the number of keypoints for debugging
+    bool bLimitKpts = false;
+
+    // Keypoint statistics
+    std::vector<unsigned int> statNumKeypoints;
+    std::vector<unsigned int> statNumMatchedKeypoints;
+    std::vector<float> statKeypointNeighborSize;
+    std::vector<double> statCompTimeDetector;
+    std::vector<double> statCompTimeDescriptor;
 
     /* MAIN LOOP OVER ALL IMAGES */
 
@@ -56,57 +88,77 @@ int main(int argc, const char *argv[])
         img = cv::imread(imgFullFilename);
         cv::cvtColor(img, imgGray, cv::COLOR_BGR2GRAY);
 
-        //// STUDENT ASSIGNMENT
-        //// TASK MP.1 -> replace the following code with ring buffer of size dataBufferSize
-
         // push image into data frame buffer
         DataFrame frame;
         frame.cameraImg = imgGray;
         dataBuffer.push_back(frame);
 
-        //// EOF STUDENT ASSIGNMENT
+        // Remove the first (oldest) element from the vector
+        if(dataBuffer.size() > dataBufferSize) {
+            dataBuffer.erase(dataBuffer.begin());
+        }
+
         cout << "#1 : LOAD IMAGE INTO BUFFER done" << endl;
 
         /* DETECT IMAGE KEYPOINTS */
-
         // extract 2D keypoints from current image
         vector<cv::KeyPoint> keypoints; // create empty feature list for current image
-        string detectorType = "SHITOMASI";
 
-        //// STUDENT ASSIGNMENT
-        //// TASK MP.2 -> add the following keypoint detectors in file matching2D.cpp and enable string-based selection based on detectorType
-        //// -> HARRIS, FAST, BRISK, ORB, AKAZE, SIFT
+        double t = (double)cv::getTickCount();
 
-        if (detectorType.compare("SHITOMASI") == 0)
+        if (detectorName.compare("SHITOMASI") == 0)
         {
-            detKeypointsShiTomasi(keypoints, imgGray, false);
+            detKeypointsShiTomasi(keypoints, imgGray, detectorVis);
         }
-        else
+        else if (detectorName.compare("HARRIS") == 0)
         {
-            //...
+            detKeypointsHarris(keypoints,imgGray,detectorVis);
         }
-        //// EOF STUDENT ASSIGNMENT
+        else if (detectorName.compare("FAST") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, "FAST", detectorVis);
+        }
+        else if (detectorName.compare("BRISK") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, "BRISK", detectorVis);
+        }
+        else if (detectorName.compare("ORB") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, "ORB", detectorVis);
+        }
+        else if (detectorName.compare("AKAZE") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, "AKAZE", detectorVis);
+        }
+        else if (detectorName.compare("SIFT") == 0)
+        {
+            detKeypointsModern(keypoints, imgGray, "SIFT", detectorVis);
+        }
 
-        //// STUDENT ASSIGNMENT
-        //// TASK MP.3 -> only keep keypoints on the preceding vehicle
+        t = ((double)cv::getTickCount() - t) / cv::getTickFrequency();
 
-        // only keep keypoints on the preceding vehicle
-        bool bFocusOnVehicle = true;
+        // Only keep keypoints on the preceding vehicle
         cv::Rect vehicleRect(535, 180, 180, 150);
         if (bFocusOnVehicle)
         {
-            // ...
+            for(auto it=keypoints.begin(); it!=keypoints.end();) {
+                if(!vehicleRect.contains(it->pt))  {
+                    it = keypoints.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
         }
+        statNumKeypoints.push_back(keypoints.size());
 
-        //// EOF STUDENT ASSIGNMENT
 
         // optional : limit number of keypoints (helpful for debugging and learning)
-        bool bLimitKpts = false;
         if (bLimitKpts)
         {
             int maxKeypoints = 50;
 
-            if (detectorType.compare("SHITOMASI") == 0)
+            if (detectorName.compare("SHITOMASI") == 0)
             { // there is no response info, so keep the first 50 as they are sorted in descending quality order
                 keypoints.erase(keypoints.begin() + maxKeypoints, keypoints.end());
             }
@@ -116,23 +168,21 @@ int main(int argc, const char *argv[])
 
         // push keypoints and descriptor for current frame to end of data buffer
         (dataBuffer.end() - 1)->keypoints = keypoints;
-        cout << "#2 : DETECT KEYPOINTS done" << endl;
+        cout << "#2 : DETECT KEYPOINTS (" << detectorName << ") DONE in " << 1000 * t / 1.0 << "ms"  << endl;
+        statCompTimeDetector.push_back(1000 * t / 1.0);
 
-        /* EXTRACT KEYPOINT DESCRIPTORS */
-
-        //// STUDENT ASSIGNMENT
-        //// TASK MP.4 -> add the following descriptors in file matching2D.cpp and enable string-based selection based on descriptorType
-        //// -> BRIEF, ORB, FREAK, AKAZE, SIFT
-
+        // Extract keypoint descriptors
         cv::Mat descriptors;
-        string descriptorType = "BRISK"; // BRIEF, ORB, FREAK, AKAZE, SIFT
-        descKeypoints((dataBuffer.end() - 1)->keypoints, (dataBuffer.end() - 1)->cameraImg, descriptors, descriptorType);
-        //// EOF STUDENT ASSIGNMENT
+        t = (double)cv::getTickCount();
+        descKeypoints((dataBuffer.end() - 1)->keypoints, (dataBuffer.end() - 1)->cameraImg, descriptors, descriptorName);
+        t = ((double)cv::getTickCount() - t) / cv::getTickFrequency();
+        statCompTimeDescriptor.push_back(1000 * t / 1.0);
+
 
         // push descriptors for current frame to end of data buffer
         (dataBuffer.end() - 1)->descriptors = descriptors;
 
-        cout << "#3 : EXTRACT DESCRIPTORS done" << endl;
+        cout << "#3 : EXTRACT DESCRIPTORS (" << descriptorName << ") DONE in " << 1000 * t / 1.0 << "ms" << endl;
 
         if (dataBuffer.size() > 1) // wait until at least two images have been processed
         {
@@ -140,19 +190,12 @@ int main(int argc, const char *argv[])
             /* MATCH KEYPOINT DESCRIPTORS */
 
             vector<cv::DMatch> matches;
-            string matcherType = "MAT_BF";        // MAT_BF, MAT_FLANN
-            string descriptorType = "DES_BINARY"; // DES_BINARY, DES_HOG
-            string selectorType = "SEL_NN";       // SEL_NN, SEL_KNN
-
-            //// STUDENT ASSIGNMENT
-            //// TASK MP.5 -> add FLANN matching in file matching2D.cpp
-            //// TASK MP.6 -> add KNN match selection and perform descriptor distance ratio filtering with t=0.8 in file matching2D.cpp
 
             matchDescriptors((dataBuffer.end() - 2)->keypoints, (dataBuffer.end() - 1)->keypoints,
                              (dataBuffer.end() - 2)->descriptors, (dataBuffer.end() - 1)->descriptors,
                              matches, descriptorType, matcherType, selectorType);
 
-            //// EOF STUDENT ASSIGNMENT
+            statNumMatchedKeypoints.push_back(matches.size());
 
             // store matches in current data frame
             (dataBuffer.end() - 1)->kptMatches = matches;
@@ -160,8 +203,7 @@ int main(int argc, const char *argv[])
             cout << "#4 : MATCH KEYPOINT DESCRIPTORS done" << endl;
 
             // visualize matches between current and previous image
-            bVis = true;
-            if (bVis)
+            if (matchingVis)
             {
                 cv::Mat matchImg = ((dataBuffer.end() - 1)->cameraImg).clone();
                 cv::drawMatches((dataBuffer.end() - 2)->cameraImg, (dataBuffer.end() - 2)->keypoints,
@@ -176,10 +218,20 @@ int main(int argc, const char *argv[])
                 cout << "Press key to continue to next image" << endl;
                 cv::waitKey(0); // wait for key to be pressed
             }
-            bVis = false;
         }
 
     } // eof loop over all images
+
+    // Print the statistics
+    unsigned int statNumKeypointsTotal = std::accumulate( statNumKeypoints.begin(), statNumKeypoints.end(), 0.0);
+    unsigned int statNumMatchedKeypointsTotal = std::accumulate( statNumMatchedKeypoints.begin(), statNumMatchedKeypoints.end(), 0.0);
+    double statCompTimeDetectorAvg = std::accumulate( statCompTimeDetector.begin(), statCompTimeDetector.end(), 0.0) / statCompTimeDetector.size();
+    double statCompTimeDescriptorAvg = std::accumulate( statCompTimeDescriptor.begin(), statCompTimeDescriptor.end(), 0.0) / statCompTimeDescriptor.size();
+    std::cout << "Detector: " << detectorName << " Descriptor: " << descriptorName << std::endl;
+    std::cout << "Num keypoints in car area: " << statNumKeypointsTotal;
+    std::cout << "\t\tNum matched keypoints: " << statNumMatchedKeypointsTotal;
+    std::cout << "\t\tAvg time detector: " << statCompTimeDetectorAvg;
+    std::cout << "\t\tAvg time descriptor: " << statCompTimeDescriptorAvg;
 
     return 0;
 }
